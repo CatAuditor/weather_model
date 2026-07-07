@@ -429,7 +429,7 @@ docker run --rm \\
 const simMap = new MapView($("simCanvas"), $("simTip"));
 const SG_W = 360, SG_H = 181, SG_T = 24;
 const SIM_DT = 300;                 // physics step, sim-seconds
-let simU = null, simV = null, simR = null;
+let simU = null, simV = null, simR = null, simSU = null, simSV = null;
 let simRunning = false, simClockS = 0, simSpeed = 14400, lastFrame = 0, stepCarry = 0;
 const emitters = [];                // {gy, gx (1° coords), rate ac-ft/min}
 let parcels = [];                   // {gy, gx, vol}
@@ -461,6 +461,10 @@ async function loadSimMonth(m) {
   simU = new Int8Array(buf, 0, n);
   simV = new Int8Array(buf, n, n);
   simR = new Uint8Array(buf, 2 * n, n);
+  // 5-field layout carries ERA5-derived shear dispersion; 3-field is legacy
+  const hasShear = buf.byteLength >= 5 * n;
+  simSU = hasShear ? new Uint8Array(buf, 3 * n, n) : null;
+  simSV = hasShear ? new Uint8Array(buf, 4 * n, n) : null;
   simMonthNum = m;
   $("simDataLabel").textContent = `15 ${MONTH_NAMES[m - 1]} 2025`;
 }
@@ -482,22 +486,50 @@ function sampleField(f, gy, gx, tHour) {
   return bil(t0) * (1 - tf) + bil(t1) * tf;
 }
 
+/* Dispersion: each parcel carries a stochastic velocity perturbation
+ * (Ornstein-Uhlenbeck / Langevin) that decorrelates over TAU = 6 h — the
+ * model's reference vertical-mixing timescale. Its amplitude is the
+ * ERA5-derived humidity-weighted std-dev of wind across the column's 25
+ * pressure levels (simSU/simSV), i.e. the vertical-shear spread that the
+ * 2-D column collapse removes: parcels mixed to different heights ride
+ * different winds, so a plume fans out where the column is sheared. */
+const DISP_TAU = 21600;            // s
+const DISP_FALLBACK_SIGMA = 2.8;   // m/s rms, only for legacy assets without shear fields
+let dispFactor = 1.0;
+function gauss() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
 function simStep() {
   if (!simU) return;
   const tHour = (simClockS / 3600) % SG_T;
+  const sigU = (gy, gx) => dispFactor *
+    (simSU ? sampleField(simSU, gy, gx, tHour) * 0.1 : DISP_FALLBACK_SIGMA);
+  const sigV = (gy, gx) => dispFactor *
+    (simSV ? sampleField(simSV, gy, gx, tHour) * 0.1 : DISP_FALLBACK_SIGMA);
   // emit
   for (const e of emitters) {
     const vol = e.rate * (SIM_DT / 60);
     if (parcels.length < PARCEL_CAP) {
-      parcels.push({ gy: e.gy + (Math.random() - 0.5) * 0.6, gx: e.gx + (Math.random() - 0.5) * 0.6, vol });
+      parcels.push({
+        gy: e.gy + (Math.random() - 0.5) * 0.6, gx: e.gx + (Math.random() - 0.5) * 0.6,
+        vol, pu: sigU(e.gy, e.gx) * gauss(), pv: sigV(e.gy, e.gx) * gauss(),
+      });
       emittedTotal += vol;
     }
   }
   // advect + rain out
+  const ouDecay = 1 - SIM_DT / DISP_TAU;
+  const ouNoise = Math.sqrt(2 * SIM_DT / DISP_TAU);
   const alive = [];
   for (const p of parcels) {
-    const u = sampleField(simU, p.gy, p.gx, tHour) * 0.5;   // m/s
-    const v = sampleField(simV, p.gy, p.gx, tHour) * 0.5;
+    p.pu = p.pu * ouDecay + sigU(p.gy, p.gx) * ouNoise * gauss();
+    p.pv = p.pv * ouDecay + sigV(p.gy, p.gx) * ouNoise * gauss();
+    const u = sampleField(simU, p.gy, p.gx, tHour) * 0.5 + p.pu;   // m/s
+    const v = sampleField(simV, p.gy, p.gx, tHour) * 0.5 + p.pv;
     const lat = 90 - p.gy;
     const coslat = Math.max(0.05, Math.cos(lat * Math.PI / 180));
     p.gx = (p.gx + (u * SIM_DT) / (111320 * coslat) + SG_W) % SG_W;
@@ -618,6 +650,7 @@ $("clearEmitters").addEventListener("click", () => {
   $("emitterCount").textContent = "0 emitters";
   simMap.render();
 });
+$("simDisp").addEventListener("change", () => { dispFactor = +$("simDisp").value; });
 document.querySelectorAll("[data-speed]").forEach((b) =>
   b.addEventListener("click", () => {
     simSpeed = +b.dataset.speed;
