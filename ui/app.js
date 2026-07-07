@@ -901,7 +901,9 @@ landReady.then(() => {
   designMap.base = base; viewMap.base = base; simMap.base = base;
   designMap.fit(); viewMap.fit(); simMap.fit();
   updateFootprint();
-  if (location.hash.includes("sim"))
+  if (location.hash.includes("specs"))
+    document.querySelector('[data-tab="specs"]').click();
+  else if (location.hash.includes("sim"))
     document.querySelector('[data-tab="sim"]').click();
   if (location.hash.includes("simtest")) {  // synchronous smoke test for CI/screenshots
     simReady.then(() => {

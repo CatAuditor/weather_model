@@ -16,6 +16,7 @@
     <button data-tab="sim">Live simulator</button>
     <button data-tab="view">View results</button>
     <button data-tab="ref">Reference</button>
+    <button data-tab="specs">Specs</button>
   </nav>
   <button id="themeBtn" title="Toggle color theme">◐</button>
 </header>
@@ -279,6 +280,110 @@
       <li><a href="https://doi.org/10.5194/hess-24-2419-2020">Model paper — HESS 24, 2419–2435 (2020)</a></li>
       <li><a href="https://cds.climate.copernicus.eu">Copernicus Climate Data Store (ERA5)</a></li>
     </ul>
+  </div>
+</section>
+
+<!-- ============ SPECS TAB ============ -->
+<section class="tab" id="tab-specs">
+  <div class="prose">
+    <h2>Technical summary</h2>
+    <p>Three components. <b>(1) The UTrack model</b> — the published atmospheric moisture-tracking model
+       (<a href="https://doi.org/10.5194/hess-24-2419-2020">Tuinenburg &amp; Staal, HESS 24, 2419–2435, 2020</a>),
+       a C/OpenMP batch code that tags moisture evaporating from user-defined source cells and follows it
+       through ERA5 reanalysis weather until it precipitates; runs in Docker on AWS with S3 staging.
+       <b>(2) This workbench</b> — a static app (AWS Amplify, no backend) that designs runs, and views model
+       output entirely client-side: files you drop here never leave your browser.
+       <b>(3) The live simulator</b> — a browser implementation of UTrack's 2-D scheme on preprocessed real
+       ERA5 fields for instant emitter/run/reset experimentation; demonstrative, with the full 3-D model as
+       the quantitative instrument.</p>
+
+    <details>
+      <summary style="cursor:pointer;font-weight:650;padding:6px 0">Full model (batch, AWS)</summary>
+      <ul>
+        <li><b>Grid:</b> global 0.25° (721 × 1440), 25 pressure levels (50–1000 hPa), hourly ERA5.</li>
+        <li><b>Forcing:</b> 5 files per simulated day (~5.8 GB/day measured); a run needs
+            <i>release days + 24</i> consecutive days (≥ 25 days ≈ 145 GB).</li>
+        <li><b>Physics:</b> parcels released ∝ ERA5 evaporation from masked cells; advected by 3-D winds
+            (scheme-dependent); vertical mixing 1–120 h (reference schemes: 4 = Lagrangian 6 h,
+            7 = Eulerian 3-D); allocated to precipitation at rate P/PW. Moisture is a passive tracer —
+            results are linear in the released amount.</li>
+        <li><b>Output:</b> NetCDF-3 global fields <code>released</code>, <code>allocated</code>,
+            <code>insystem</code> (mm per 0.25° cell, time-integrated).</li>
+        <li><b>Resources:</b> ~3–4 GB RAM + parcel arrays; OpenMP-parallel; 8–16 vCPUs recommended.</li>
+        <li><b>CDS-format fixes in this port:</b> unpacked floats (scale/offset defaults),
+            <code>viwve/viwvn</code> names, surface-first pressure levels (auto-reversed),
+            zip-wrapped single-level downloads (auto-merged).</li>
+        <li><b>Validation:</b> run on real 2012-07-01 forcing — 4.41 mm released from the Utrecht cell,
+            67% allocated downwind (max in Siberia), mass budget closed. Browser-written masks verified
+            against ncdump, python-netCDF4, and the compiled model.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary style="cursor:pointer;font-weight:650;padding:6px 0">Live simulator — methods &amp; equations</summary>
+      <ul>
+        <li><b>Advection:</b> u<sub>eff</sub> = viwve/tcw, v<sub>eff</sub> = viwvn/tcw
+            (moisture-flux-weighted column wind, m/s) — the model's own 2-D scheme.</li>
+        <li><b>Rainout:</b> r = tp·1000/tcw per hour (capped 50%/h); each step a parcel deposits
+            vol · r · Δt/3600.</li>
+        <li><b>Dispersion:</b> per-parcel Langevin (Ornstein–Uhlenbeck) velocity perturbation
+            u′ ← u′(1 − Δt/τ) + σ·√(2Δt/τ)·ξ with τ = 6 h (the model's reference mixing timescale) and
+            σ(x,y,t) = ERA5 humidity-weighted std-dev of wind across the column's 25 levels
+            (mean ≈ 3.2 m/s, p95 ≈ 8 m/s). This reproduces statistically the vertical-shear spreading
+            of the 3-D scheme. The UI's 0.5×/1×/1.5× selector is a sensitivity test.</li>
+        <li><b>Time step:</b> Δt = 300 s; playback 1/4/12 sim-hours per wall-second; parcel cap 30,000.</li>
+        <li><b>Budget:</b> emitted = airborne + rained out (acre-feet; 1 ac-ft = 1233.48 m³) —
+            closure is exact by construction and displayed live.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary style="cursor:pointer;font-weight:650;padding:6px 0">Live simulator — data &amp; encodings</summary>
+      <table>
+        <tr><th>Field</th><th>Grid</th><th>Encoding</th></tr>
+        <tr><td>u, v (moisture-flux wind)</td><td>1°, hourly</td><td>int8 · 0.5 m/s · clamp ±63</td></tr>
+        <tr><td>σu, σv (shear dispersion)</td><td>1°, hourly</td><td>uint8 · 0.1 m/s · clamp 25.5</td></tr>
+        <tr><td>r (rainout fraction/h)</td><td><b>0.5°</b>, hourly</td><td>uint8 · 1/500 · cap 51%</td></tr>
+      </table>
+      <p>Source: ERA5, the <b>15th of each month of 2025</b>, looped daily (~4.8 MB per month, fetched on
+         demand). Rainout and the deposition map stay at 0.5° so ERA5's real orographic precipitation —
+         windward enhancement and rain shadows — survives downsampling: mountains enter through the data,
+         not a parameterization. The basemap hillshade is ERA5 orography and is purely visual.</p>
+    </details>
+
+    <details>
+      <summary style="cursor:pointer;font-weight:650;padding:6px 0">Known limitations (state when presenting)</summary>
+      <ul>
+        <li>One representative day per month, looped — long runs re-experience that day's weather rather
+            than an evolving synoptic sequence.</li>
+        <li>2-D column transport — vertical structure is statistical (shear dispersion), not resolved.</li>
+        <li>0.5°/1° resolution — major ranges and shadows resolve; individual valleys don't.
+            Quantitative claims belong to full 3-D runs at 0.25° on AWS.</li>
+        <li>Emission is a passive-tracer scaling; it does not feed back on the weather
+            (valid for amounts small relative to atmospheric moisture).</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary style="cursor:pointer;font-weight:650;padding:6px 0">Architecture &amp; deployment</summary>
+      <ul>
+        <li><b>Hosting:</b> AWS Amplify, auto-deploy from GitHub <code>main</code>; static files only,
+            no backend, no accounts. Dropped result files are parsed in-browser and never uploaded.</li>
+        <li><b>Stack:</b> vanilla JS + Canvas; in-house NetCDF-3 reader/writer (<code>ui/netcdf.js</code>);
+            validated accessible palette; light/dark themes.</li>
+        <li><b>Model runs:</b> Docker (Ubuntu 24.04 + libnetcdf) on EC2 or AWS Batch; entrypoint syncs
+            forcing/masks from S3 and uploads results (<code>README-DEPLOY.md</code>).</li>
+        <li><b>Credentials:</b> CDS token via env vars from Secrets Manager; AWS via IAM roles;
+            nothing in the repo or image.</li>
+        <li><b>Pipeline scripts:</b> <code>forcing/get_ERA5.py</code> (model forcing),
+            <code>forcing/make_sim_assets.py</code> (simulator months),
+            <code>forcing/make_terrain.py</code> (hillshade).</li>
+      </ul>
+    </details>
+
+    <p class="note" style="margin-top:16px">Versioned copy:
+       <a href="https://github.com/CatAuditor/weather_model/blob/main/TECHNICAL-SPECS.md">TECHNICAL-SPECS.md</a>
+       in the repository. Update both together.</p>
   </div>
 </section>
 
