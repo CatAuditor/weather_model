@@ -548,6 +548,19 @@ async function tryLoad(f) {
   catch (err) { $("fileInfo").innerHTML = `<span class="warn">${err.message}</span>`; }
 }
 
+/* bundled real model output: Utrecht source, scheme 4, 2012-07-01 forcing */
+$("sampleBtn").addEventListener("click", async () => {
+  try {
+    $("fileInfo").textContent = "Loading sample…";
+    const resp = await fetch("assets/sample_utrecht_4.nc.gz");
+    const buf = await new Response(
+      resp.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+    await loadResult(buf,
+      "<b>real model output</b> · Utrecht source, scheme 4 (Lagrangian, 6 h mixing), " +
+      "released 2012-07-01 · validation run on one day of ERA5 forcing");
+  } catch (err) { $("fileInfo").innerHTML = `<span class="warn">${err.message}</span>`; }
+});
+
 /* synthetic demo: a plausible-looking plume, clearly labeled */
 $("demoBtn").addEventListener("click", async () => {
   await landReady;
@@ -613,7 +626,8 @@ landReady.then(() => {
   // deep links: #view opens the results tab, #demo also loads the synthetic demo, #light/#dark force theme
   if (location.hash.includes("light")) setTheme("light");
   if (location.hash.includes("dark")) setTheme("dark");
-  if (location.hash.includes("view") || location.hash.includes("demo"))
+  if (/view|demo|sample/.test(location.hash))
     document.querySelector('[data-tab="view"]').click();
   if (location.hash.includes("demo")) $("demoBtn").click();
+  if (location.hash.includes("sample")) $("sampleBtn").click();
 });
