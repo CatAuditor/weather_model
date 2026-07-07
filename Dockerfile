@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && unzip -q /tmp/awscli.zip -d /tmp \
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscli.zip \
-    && pip3 install --no-cache-dir --break-system-packages cdsapi
+    && pip3 install --no-cache-dir --break-system-packages cdsapi netCDF4
 
 WORKDIR /model
 COPY --from=build /src/run_recycling .

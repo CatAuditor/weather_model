@@ -17,7 +17,10 @@ A model run of `./run_recycling Y M D R` needs R+24 consecutive days of
 forcing starting at Y-M-D, so fetch with NDAYS = R+24.
 """
 import datetime
+import os
 import sys
+import tempfile
+import zipfile
 
 import cdsapi
 
@@ -44,6 +47,40 @@ SINGLE_LEVEL_VARS = [
 ]
 
 
+def merge_netcdf_zip(zip_path, out_path):
+    """The CDS ships a zip when a request mixes instantaneous and accumulated
+    variables (two NetCDF members). Merge them into the single file UTrack reads."""
+    import netCDF4
+
+    with tempfile.TemporaryDirectory() as td:
+        with zipfile.ZipFile(zip_path) as z:
+            members = [z.extract(n, td) for n in z.namelist() if n.endswith(".nc")]
+        srcs = [netCDF4.Dataset(m) for m in members]
+        out = netCDF4.Dataset(out_path, "w", format="NETCDF4")
+        for d_name, dim in srcs[0].dimensions.items():
+            out.createDimension(d_name, len(dim))
+        for src in srcs:
+            for v_name, var in src.variables.items():
+                if v_name in out.variables:
+                    continue
+                fill = getattr(var, "_FillValue", None)
+                v = out.createVariable(v_name, var.dtype, var.dimensions,
+                                       zlib=var.ndim >= 3, complevel=1, fill_value=fill)
+                v.setncatts({k: var.getncattr(k) for k in var.ncattrs() if k != "_FillValue"})
+                v[:] = var[:]
+            src.close()
+        out.close()
+
+
+def unzip_if_needed(path):
+    if not zipfile.is_zipfile(path):
+        return
+    tmp = path + ".zip"
+    os.replace(path, tmp)
+    merge_netcdf_zip(tmp, path)
+    os.remove(tmp)
+
+
 def fetch_day(client, date):
     tag = f"{date.day:02d}{date.month:02d}{date.year}"
     base = {
@@ -66,6 +103,7 @@ def fetch_day(client, date):
         {**base, "variable": SINGLE_LEVEL_VARS},
         f"ERA5_2d{tag}.nc",
     )
+    unzip_if_needed(f"ERA5_2d{tag}.nc")
 
 
 def main():

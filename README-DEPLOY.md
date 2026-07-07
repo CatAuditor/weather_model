@@ -52,9 +52,11 @@ Requirements:
 - A CDS account with the ERA5 licence accepted, and credentials either in
   `~/.cdsapirc` or via the `CDSAPI_URL` / `CDSAPI_KEY` environment variables.
   **Never commit the token** — `.gitignore` blocks `.cdsapirc` and `.env`.
-- Disk: roughly 7–13 GB per simulated day (five global files, four of them
-  3-D on 25 pressure levels). A minimal 25-day run is ~200–300 GB, so plan
-  storage accordingly and reuse downloaded periods across runs.
+- Disk: ~5.8 GB per simulated day measured with the current CDS API (five
+  global files, four of them 3-D on 25 pressure levels). A minimal 25-day
+  run is ~145 GB, so plan storage accordingly and reuse downloaded periods
+  across runs. The script needs `pip install cdsapi netCDF4` (the CDS ships
+  the single-level request as a zip of two files; the script merges them).
 
 The C code accepts both legacy CDS files (short-packed, `p71.162`/`p72.162`
 flux names) and current CDS API output (unpacked floats, `viwve`/`viwvn`).

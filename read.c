@@ -1,9 +1,36 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include "netcdf.h"
 #include "recycling.h"
 #include "defines.h"
+
+/* The model indexes vertical levels assuming ascending pressure order
+ * (index 0 = 50 hPa ... index 24 = 1000 hPa), which is how the legacy CDS
+ * delivered them. The current CDS API returns levels surface-first
+ * (1000 -> 50). Detect the file's ordering from its level coordinate and
+ * reverse the 25 level slices in memory when needed. */
+static int reverse_levels_if_needed(int ncid, float* data){
+	int varid;
+	double plev[25];
+	size_t n = (size_t)721*1440;
+	float* tmp;
+	int l;
+	if (nc_inq_varid(ncid, "pressure_level", &varid))
+		if (nc_inq_varid(ncid, "level", &varid))
+			return 0;
+	if (nc_get_var_double(ncid, varid, plev)) return 0;
+	if (plev[0] < plev[24]) return 0; /* already ascending: matches model */
+	tmp = malloc(sizeof(float)*n);
+	for (l=0; l<12; l++){
+		memcpy(tmp, data+(size_t)l*n, sizeof(float)*n);
+		memcpy(data+(size_t)l*n, data+(size_t)(24-l)*n, sizeof(float)*n);
+		memcpy(data+(size_t)(24-l)*n, tmp, sizeof(float)*n);
+	}
+	free(tmp);
+	return 1;
+}
 
 int get_input(int *array,char* path){
         int ncid, varid, status;//
@@ -235,6 +262,7 @@ int get_era5_3dq(int year,int month,int day,int hour,struct meteoday meteo){
 
                if ((retval = nc_get_vara_float(ncid, varid, start,count,meteo.q)))
                    ERR(retval);
+	       reverse_levels_if_needed(ncid, meteo.q);
 	       /* Close the file */
 	       retval = nc_close(ncid);
 	return 0;}
@@ -289,6 +317,7 @@ int get_era5_3dt(int year,int month,int day,int hour,struct meteoday meteo){
 
                if ((retval = nc_get_vara_float(ncid, varid, start,count,meteo.t)))
                    ERR(retval);
+	       reverse_levels_if_needed(ncid, meteo.t);
 	       /* Close the file */
 	       retval = nc_close(ncid);
 	return 0;}
@@ -343,6 +372,7 @@ int get_era5_3dw(int year,int month,int day,int hour,struct meteoday meteo){
 
                if ((retval = nc_get_vara_float(ncid, varid, start,count,meteo.w)))
                    ERR(retval);
+	       reverse_levels_if_needed(ncid, meteo.w);
 	       /* Close the file */
 	       retval = nc_close(ncid);
 	return 0;}
@@ -395,6 +425,7 @@ int get_era5_3duv(int year,int month,int day,int hour,struct meteoday meteo){
 
                if ((retval = nc_get_vara_float(ncid, varid, start,count,meteo.v)))
                    ERR(retval);
+	       reverse_levels_if_needed(ncid, meteo.v);
 
 	   if ((retval = nc_inq_varid(ncid, "u" , &varid)))
 	      ERR(retval);
@@ -403,6 +434,7 @@ int get_era5_3duv(int year,int month,int day,int hour,struct meteoday meteo){
 
                if ((retval = nc_get_vara_float(ncid, varid, start,count,meteo.u)))
                    ERR(retval);
+	       reverse_levels_if_needed(ncid, meteo.u);
 	       /* Close the file */
 	//       retval = nc_close(ncid);
 

@@ -383,7 +383,7 @@ function updateFootprint() {
   $("stParcels").textContent = parcels >= 1e6 ? (parcels / 1e6).toFixed(1) + "M" : parcels.toLocaleString();
   $("stMem").textContent = fmtBytes(parcels * 7 * 4);
   $("stDays").textContent = p.days + 24;
-  $("stGB").textContent = "~" + Math.round((p.days + 24) * 2.5) + " GB";
+  $("stGB").textContent = "~" + Math.round((p.days + 24) * 5.8) + " GB";
   $("jobPreview").textContent =
     `${p.sim} ${p.interp} ${p.ppmm} ./input/${p.name}.nc ./output/out_${p.name}_${p.sim}.nc\n` +
     `./run_recycling ${p.y} ${p.m} ${p.dday} ${p.days}`;
