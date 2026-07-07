@@ -27,7 +27,7 @@ document.querySelectorAll("nav button").forEach((b) =>
     document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
     document.querySelectorAll(".tab").forEach((t) =>
       t.classList.toggle("active", t.id === "tab-" + b.dataset.tab));
-    designMap.fit(); viewMap.fit();
+    designMap.fit(); viewMap.fit(); simMap.fit();
   }));
 
 /* ---------- sequential ramp (validated reference palette) ---------- */
@@ -421,6 +421,193 @@ docker run --rm \\
   <acct>.dkr.ecr.<region>.amazonaws.com/utrack:latest`);
 });
 
+/* ================= LIVE SIMULATOR =================
+ * Browser port of UTrack's 2-D scheme: parcels move with the
+ * moisture-flux-weighted wind (viwve/tcw) and rain out at the column
+ * rainout rate (tp/tcw), using 1°-hourly ERA5 fields for 2012-07-01,
+ * looped daily. Units: user emits acre-feet/min; budgets in acre-feet. */
+const simMap = new MapView($("simCanvas"), $("simTip"));
+const SG_W = 360, SG_H = 181, SG_T = 24;
+const SIM_DT = 300;                 // physics step, sim-seconds
+let simU = null, simV = null, simR = null;
+let simRunning = false, simClockS = 0, simSpeed = 14400, lastFrame = 0, stepCarry = 0;
+const emitters = [];                // {gy, gx (1° coords), rate ac-ft/min}
+let parcels = [];                   // {gy, gx, vol}
+const PARCEL_CAP = 30000;
+let emittedTotal = 0, rainedTotal = 0;
+const depGrid = new Float32Array(SG_H * SG_W);       // rained-out ac-ft per 1° cell
+const depCanvas = new OffscreenCanvas(SG_W, SG_H);
+
+const simReady = (async () => {
+  const resp = await fetch("assets/sim_forcing.bin.gz");
+  const buf = await new Response(resp.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  const n = SG_T * SG_H * SG_W;
+  simU = new Int8Array(buf, 0, n);
+  simV = new Int8Array(buf, n, n);
+  simR = new Uint8Array(buf, 2 * n, n);
+})();
+
+function sampleField(f, gy, gx, tHour) {
+  // bilinear in space, linear in (looped) time; f is int8/uint8 raw
+  const t0 = Math.floor(tHour) % SG_T, t1 = (t0 + 1) % SG_T, tf = tHour - Math.floor(tHour);
+  const y0 = Math.max(0, Math.min(SG_H - 2, Math.floor(gy))), yf = gy - y0;
+  const x0 = Math.floor(gx) % SG_W, x1 = (x0 + 1) % SG_W, xf = gx - Math.floor(gx);
+  const at = (t, y, x) => f[t * SG_H * SG_W + y * SG_W + x];
+  const bil = (t) =>
+    (at(t, y0, x0) * (1 - xf) + at(t, y0, x1) * xf) * (1 - yf) +
+    (at(t, y0 + 1, x0) * (1 - xf) + at(t, y0 + 1, x1) * xf) * yf;
+  return bil(t0) * (1 - tf) + bil(t1) * tf;
+}
+
+function simStep() {
+  const tHour = (simClockS / 3600) % SG_T;
+  // emit
+  for (const e of emitters) {
+    const vol = e.rate * (SIM_DT / 60);
+    if (parcels.length < PARCEL_CAP) {
+      parcels.push({ gy: e.gy + (Math.random() - 0.5) * 0.6, gx: e.gx + (Math.random() - 0.5) * 0.6, vol });
+      emittedTotal += vol;
+    }
+  }
+  // advect + rain out
+  const alive = [];
+  for (const p of parcels) {
+    const u = sampleField(simU, p.gy, p.gx, tHour) * 0.5;   // m/s
+    const v = sampleField(simV, p.gy, p.gx, tHour) * 0.5;
+    const lat = 90 - p.gy;
+    const coslat = Math.max(0.05, Math.cos(lat * Math.PI / 180));
+    p.gx = (p.gx + (u * SIM_DT) / (111320 * coslat) + SG_W) % SG_W;
+    p.gy = Math.min(SG_H - 1.01, Math.max(0.01, p.gy - (v * SIM_DT) / 111320));
+    const rf = sampleField(simR, p.gy, p.gx, tHour) / 500 * (SIM_DT / 3600);
+    const dep = p.vol * Math.min(0.9, rf);
+    if (dep > 0) {
+      p.vol -= dep;
+      rainedTotal += dep;
+      depGrid[Math.round(p.gy) * SG_W + (Math.round(p.gx) % SG_W)] += dep;
+    }
+    if (p.vol > 1e-4) alive.push(p);
+  }
+  parcels = alive;
+  simClockS += SIM_DT;
+}
+
+function renderDeposition() {
+  const ctx = depCanvas.getContext("2d");
+  const img = ctx.createImageData(SG_W, SG_H);
+  let max = 0;
+  for (let k = 0; k < depGrid.length; k++) if (depGrid[k] > max) max = depGrid[k];
+  if (max > 0) {
+    const lo = Math.log(max * 1e-4), span = Math.log(max) - lo || 1;
+    for (let y = 0; y < SG_H; y++)
+      for (let x = 0; x < SG_W; x++) {
+        const v = depGrid[y * SG_W + x];
+        if (!(v > 0)) continue;
+        const t = Math.max(0, (Math.log(v) - lo) / span);
+        const c = rampColor(t);
+        const p = (y * SG_W + (x + 180) % SG_W) * 4;
+        img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2];
+        img.data[p + 3] = 60 + 180 * t;
+      }
+  }
+  ctx.putImageData(img, 0, 0);
+  simMap.octx.clearRect(0, 0, W, H);
+  simMap.octx.imageSmoothingEnabled = true;
+  simMap.octx.drawImage(depCanvas, 0, -2, W, H + 4); // 181 rows -> 721, tiny stretch
+}
+
+simMap.decor = (ctx) => {
+  const px = Math.max(1.5, 2 / simMap.s);
+  ctx.fillStyle = accent();
+  for (const p of parcels) {
+    const dx = (p.gx * 4 + SHIFT) % W, dy = p.gy * 4;
+    ctx.globalAlpha = 0.35 + 0.6 * Math.min(1, p.vol / (emitters[0]?.rate * 5 / 60 || 1));
+    ctx.fillRect(dx - px / 2, dy - px / 2, px, px);
+  }
+  ctx.globalAlpha = 1;
+  for (const e of emitters) {
+    const dx = (e.gx * 4 + SHIFT) % W, dy = e.gy * 4;
+    ctx.strokeStyle = css("--danger");
+    ctx.lineWidth = 2.5 / simMap.s;
+    ctx.beginPath();
+    ctx.arc(dx, dy, 6 / simMap.s + 2, 0, 7);
+    ctx.stroke();
+  }
+};
+
+simMap.onPaint = (g, phase) => {
+  if (phase !== "start") return;
+  emitters.push({ gy: g.i / 4, gx: g.j / 4, rate: Math.max(0.1, +$("emitRate").value || 5) });
+  $("emitterCount").textContent = emitters.length + " emitter" + (emitters.length === 1 ? "" : "s");
+  simMap.render();
+};
+simMap.onHover = (g) => {
+  const d = depGrid[Math.min(SG_H - 1, Math.round(g.i / 4)) * SG_W + (Math.round(g.j / 4) % SG_W)];
+  return `${fmtLat(g.i)}, ${fmtLon(g.j)}${d > 0 ? `<br>rained out: <b>${fmtNum(d)}</b> ac-ft` : ""}`;
+};
+
+function simBudgetUI() {
+  let airborne = 0;
+  for (const p of parcels) airborne += p.vol;
+  $("wbEmitted").textContent = fmtNum(emittedTotal);
+  $("wbAirborne").textContent = fmtNum(airborne);
+  $("wbRained").textContent = fmtNum(rainedTotal);
+  $("wbParcels").textContent = parcels.length.toLocaleString();
+  const day = Math.floor(simClockS / 86400), hm = simClockS % 86400;
+  $("simClock").textContent =
+    `day ${day} · ${String(Math.floor(hm / 3600)).padStart(2, "0")}:${String(Math.floor(hm % 3600 / 60)).padStart(2, "0")}`;
+}
+
+function simFrame(ts) {
+  if (!simRunning) return;
+  const dtReal = Math.min(0.1, (ts - lastFrame) / 1000 || 0.016);
+  lastFrame = ts;
+  stepCarry += dtReal * simSpeed / SIM_DT;
+  let steps = Math.min(40, Math.floor(stepCarry));
+  stepCarry -= steps;
+  while (steps--) simStep();
+  renderDeposition();
+  simMap.render();
+  simBudgetUI();
+  requestAnimationFrame(simFrame);
+}
+
+$("simRunBtn").addEventListener("click", async () => {
+  await simReady;
+  if (!simRunning && emitters.length === 0) {
+    $("simClock").textContent = "place an emitter first";
+    return;
+  }
+  simRunning = !simRunning;
+  $("simRunBtn").textContent = simRunning ? "❚❚ Pause" : "▶ Run";
+  if (simRunning) { lastFrame = performance.now(); requestAnimationFrame(simFrame); }
+});
+$("simResetBtn").addEventListener("click", () => {
+  simRunning = false;
+  $("simRunBtn").textContent = "▶ Run";
+  parcels = []; depGrid.fill(0); emittedTotal = rainedTotal = 0; simClockS = 0; stepCarry = 0;
+  simMap.octx.clearRect(0, 0, W, H);
+  simMap.render();
+  simBudgetUI();
+});
+$("clearEmitters").addEventListener("click", () => {
+  emitters.length = 0;
+  $("emitterCount").textContent = "0 emitters";
+  simMap.render();
+});
+document.querySelectorAll("[data-speed]").forEach((b) =>
+  b.addEventListener("click", () => {
+    simSpeed = +b.dataset.speed;
+    document.querySelectorAll("[data-speed]").forEach((x) => x.classList.toggle("active", x === b));
+  }));
+function rateEquivUI() {
+  const r = Math.max(0.1, +$("emitRate").value || 5);   // ac-ft/min
+  const m3s = r * 1233.48 / 60;
+  const mmday = r * 1233.48 * 1440 / (27830 * 27830 * 0.7) * 1000; // over one ~0.25° mid-lat cell
+  $("rateEquiv").textContent = `≈ ${m3s.toFixed(0)} m³/s · ≈ ${mmday.toFixed(1)} mm/day over one grid cell`;
+}
+$("emitRate").addEventListener("input", rateEquivUI);
+rateEquivUI();
+
 /* ================= VIEWER ================= */
 let fields = {};      // name -> Float32/64Array (H*W)
 let curField = null;
@@ -612,17 +799,28 @@ $("pngBtn").addEventListener("click", () => {
 function onThemeChange() {
   if (!landMask) return;
   const base = buildBaseLayer();
-  designMap.base = base; viewMap.base = base;
+  designMap.base = base; viewMap.base = base; simMap.base = base;
   rebuildDesignOverlay();
   if (curField) renderField(); else viewMap.render();
+  renderDeposition(); simMap.render();
 }
 
 /* ---------- boot ---------- */
 landReady.then(() => {
   const base = buildBaseLayer();
-  designMap.base = base; viewMap.base = base;
-  designMap.fit(); viewMap.fit();
+  designMap.base = base; viewMap.base = base; simMap.base = base;
+  designMap.fit(); viewMap.fit(); simMap.fit();
   updateFootprint();
+  if (location.hash.includes("sim"))
+    document.querySelector('[data-tab="sim"]').click();
+  if (location.hash.includes("simtest")) {  // synchronous smoke test for CI/screenshots
+    simReady.then(() => {
+      emitters.push({ gy: 51, gx: 261.5, rate: 5 });  // Kansas
+      $("emitterCount").textContent = "1 emitter";
+      for (let s = 0; s < 3 * 288; s++) simStep();     // 3 sim-days
+      renderDeposition(); simMap.render(); simBudgetUI();
+    });
+  }
   // deep links: #view opens the results tab, #demo also loads the synthetic demo, #light/#dark force theme
   if (location.hash.includes("light")) setTheme("light");
   if (location.hash.includes("dark")) setTheme("dark");
