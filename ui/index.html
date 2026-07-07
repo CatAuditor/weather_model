@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UTrack Workbench</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>UTrack Workbench <span>· atmospheric moisture tracking</span></h1>
+  <nav>
+    <button data-tab="design" class="active">Design a run</button>
+    <button data-tab="view">View results</button>
+    <button data-tab="ref">Reference</button>
+  </nav>
+  <button id="themeBtn" title="Toggle color theme">◐</button>
+</header>
+
+<main>
+
+<!-- ============ DESIGN TAB ============ -->
+<section class="tab active" id="tab-design">
+  <div class="workspace">
+    <div class="mapwrap">
+      <canvas id="designCanvas"></canvas>
+      <div class="tooltip" id="designTip"></div>
+      <div class="map-hint">paint source cells · scroll to zoom · right-drag or ⇧-drag to pan</div>
+    </div>
+    <aside>
+      <div class="card">
+        <h2>Source region</h2>
+        <div class="row">
+          <div class="seg">
+            <button id="toolPaint" class="active">Paint</button>
+            <button id="toolErase">Erase</button>
+            <button id="toolRect">Rectangle</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Brush size</label>
+          <input type="range" id="brushSize" min="0" max="12" value="3">
+          <span id="brushLabel" class="note">7 px</span>
+        </div>
+        <div class="row">
+          <label>Example</label>
+          <select id="exampleSel"><option value="">— point sources —</option></select>
+        </div>
+        <div class="row">
+          <button class="tool" id="undoBtn">Undo</button>
+          <button class="tool" id="clearBtn">Clear</button>
+          <button class="tool" id="importBtn">Import .nc</button>
+          <input type="file" id="importFile" accept=".nc" hidden>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Simulation</h2>
+        <div class="row"><label>Scheme</label><select id="simType"></select></div>
+        <div class="row"><label>Interpolation</label>
+          <select id="interpType">
+            <option value="1" selected>1 — on (recommended)</option>
+            <option value="0">0 — off</option>
+          </select>
+        </div>
+        <div class="row"><label>Parcels / mm</label><input type="number" id="parcelsPerMM" min="1" max="1000" value="10"></div>
+        <div class="row"><label>Start date</label><input type="date" id="startDate" value="2012-07-01"></div>
+        <div class="row"><label>Release days</label><input type="number" id="releaseDays" min="1" max="365" value="5"></div>
+        <div class="row"><label>Run name</label><input type="text" id="runName" value="myregion" spellcheck="false"></div>
+      </div>
+
+      <div class="card">
+        <h2>Footprint</h2>
+        <div class="stats">
+          <div class="stat"><div class="v" id="stCells">0</div><div class="k">source cells</div></div>
+          <div class="stat"><div class="v" id="stArea">0</div><div class="k">km² area</div></div>
+          <div class="stat"><div class="v" id="stParcels">0</div><div class="k">max parcels</div></div>
+          <div class="stat"><div class="v" id="stMem">0</div><div class="k">parcel memory</div></div>
+          <div class="stat"><div class="v" id="stDays">29</div><div class="k">forcing days</div></div>
+          <div class="stat"><div class="v" id="stGB">~73 GB</div><div class="k">forcing size*</div></div>
+        </div>
+        <p class="note" style="margin:8px 0 0">*ERA5 via current CDS API (compressed). Runs execute on AWS — see Reference tab.</p>
+      </div>
+
+      <div class="card">
+        <h2>Export job</h2>
+        <div class="row"><button class="primary" id="exportMask">Download release mask (.nc)</button></div>
+        <div class="row"><button class="ghost" id="copyList">Copy list.txt line</button>
+                          <button class="ghost" id="copyCmd">Copy run commands</button></div>
+        <div class="mono" id="jobPreview"></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ VIEW TAB ============ -->
+<section class="tab" id="tab-view">
+  <div class="workspace">
+    <div class="mapwrap">
+      <canvas id="viewCanvas"></canvas>
+      <div class="tooltip" id="viewTip"></div>
+      <div class="map-hint">hover for values · scroll to zoom · right-drag or ⇧-drag to pan</div>
+    </div>
+    <aside>
+      <div class="card">
+        <h2>Result file</h2>
+        <div class="dropzone" id="dropzone">Drop a UTrack output <b>.nc</b> here<br><span class="note">or click to browse</span></div>
+        <input type="file" id="resultFile" accept=".nc" hidden>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost" id="demoBtn">Load synthetic demo</button>
+        </div>
+        <p class="note" id="fileInfo" style="margin:8px 0 0">No file loaded.</p>
+      </div>
+
+      <div class="card" id="varCard" hidden>
+        <h2>Field</h2>
+        <div class="chips" id="varChips"></div>
+        <div class="row" style="margin-top:10px">
+          <label>Scale</label>
+          <div class="seg">
+            <button id="scaleLog" class="active">Log</button>
+            <button id="scaleLin">Linear</button>
+          </div>
+        </div>
+        <div class="legend" style="margin-top:8px">
+          <canvas id="legendCanvas" width="280" height="12"></canvas>
+          <div class="lab"><span id="legMin"></span><span id="legMax"></span></div>
+        </div>
+      </div>
+
+      <div class="card" id="statCard" hidden>
+        <h2>Field statistics</h2>
+        <div class="stats">
+          <div class="stat"><div class="v" id="vSum">–</div><div class="k">sum (mm·cells)</div></div>
+          <div class="stat"><div class="v" id="vMax">–</div><div class="k">max (mm)</div></div>
+          <div class="stat"><div class="v" id="vCells">–</div><div class="k">nonzero cells</div></div>
+          <div class="stat"><div class="v" id="vMaxLoc">–</div><div class="k">max location</div></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button class="ghost" id="pngBtn">Export map as PNG</button></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ REFERENCE TAB ============ -->
+<section class="tab" id="tab-ref">
+  <div class="prose">
+    <h2>Workflow</h2>
+    <p>UTrack itself is a batch C model that needs hourly global ERA5 forcing — far too heavy for a
+       browser. This workbench handles everything around a run:</p>
+    <ol>
+      <li><b>Design</b> — paint a moisture source region, pick a scheme and dates, and export the
+          release mask (<code>.nc</code>), the <code>list.txt</code> job line, and ready-to-paste run commands.</li>
+      <li><b>Run on AWS</b> — the repo's Docker image stages forcing and masks from S3, runs the model,
+          and uploads results back to S3 (see <a href="https://github.com/CatAuditor/weather_model/blob/main/README-DEPLOY.md">README-DEPLOY.md</a>).</li>
+      <li><b>View</b> — drop the output NetCDF here to explore where the released moisture precipitated.</li>
+    </ol>
+
+    <h2>Simulation schemes</h2>
+    <p>Scheme numbers select the experiment configurations from
+       <a href="https://doi.org/10.5194/hess-24-2419-2020">Tuinenburg &amp; Staal (HESS 2020)</a>.
+       The two reference configurations recommended by the paper:</p>
+    <table>
+      <tr><th>#</th><th>Class</th><th>Notes</th></tr>
+      <tr><td>7</td><td>Eulerian, 3-D</td><td>Reference Eulerian configuration (grid-based budget)</td></tr>
+      <tr><td>4</td><td>Lagrangian</td><td>Reference parcel tracking, 6 h vertical-mixing timescale</td></tr>
+      <tr><td>6</td><td>Eulerian, 2-D</td><td>Vertically integrated budget variant</td></tr>
+      <tr><td>8 / 9 / 10</td><td>Lagrangian</td><td>Mixing-timescale sensitivity: 1 h / 24 h / 120 h</td></tr>
+      <tr><td>11–14</td><td>Lagrangian</td><td>Additional mixing variants (1 / 6 / 24 / 120 h), alternate release scheme</td></tr>
+      <tr><td>0–3</td><td>Lagrangian</td><td>Trajectory-scheme sensitivity experiments (3 = isentropic levels)</td></tr>
+    </table>
+
+    <h2>Files and formats</h2>
+    <ul>
+      <li><b>Release mask</b> — 721×1440 grid (0.25°, lat 90…−90, lon 0…359.75) with an integer
+          <code>release</code> variable, 1 = source cell. Masks exported here are NetCDF-3 classic, which
+          the model reads directly.</li>
+      <li><b>Output</b> — the model writes <code>released</code>, <code>allocated</code> and
+          <code>insystem</code> fields (mm of moisture per grid cell) as NetCDF-3; this viewer parses them
+          fully client-side. Nothing you drop here leaves your browser.</li>
+      <li><b>Forcing</b> — 5 ERA5 files per simulated day (~2.5 GB/day compressed); a run needs
+          <i>release days + 24</i> days. Download once to S3 with <code>forcing/get_ERA5.py</code> and
+          reuse across runs.</li>
+    </ul>
+
+    <h2>Cost &amp; sizing cheat-sheet</h2>
+    <ul>
+      <li>Memory: ~3–4 GB base + parcel arrays (shown live in the designer).</li>
+      <li>CPU: Lagrangian schemes are OpenMP-parallel — 8–16 vCPU instances work well.</li>
+      <li>A 5-day-release run ≈ 29 forcing days ≈ 73 GB of ERA5 on the instance or streamed from S3.</li>
+    </ul>
+
+    <h2>Links</h2>
+    <ul>
+      <li><a href="https://github.com/CatAuditor/weather_model">Repository (CatAuditor/weather_model)</a></li>
+      <li><a href="https://github.com/ObbeTuinenburg/UTrack-atmospheric-moisture">Upstream model (ObbeTuinenburg)</a></li>
+      <li><a href="https://doi.org/10.5194/hess-24-2419-2020">Model paper — HESS 24, 2419–2435 (2020)</a></li>
+      <li><a href="https://cds.climate.copernicus.eu">Copernicus Climate Data Store (ERA5)</a></li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<script src="netcdf.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
