@@ -10,13 +10,14 @@ plus, when 1°-regridded 3-D u/v/q files are present, the dispersion fields
   column's 25 pressure levels — the vertical-shear spread that drives
   horizontal dispersion in the full 3-D model.
 
-For each input day it writes ui/assets/sim_forcing_MM.bin.gz containing
-24 hourly steps on the 1° grid (lat 90..-90 -> 181 rows, lon 0..359):
+For each input day it writes ui/assets/sim_forcing_MM.bin.gz (layout v3),
+24 hourly steps; winds/dispersion on the 1° grid, rainout on 0.5° so that
+orographic precipitation and rain shadows stay resolved:
   int8  u[24][181][360]    scale 0.5 m/s (clamped ±63 m/s)
   int8  v[24][181][360]
-  uint8 r[24][181][360]    rain fraction/hour, scale 1/500
-  uint8 su[24][181][360]   sigma_u, scale 0.1 m/s   (only with 3-D inputs)
+  uint8 su[24][181][360]   sigma_u, scale 0.1 m/s
   uint8 sv[24][181][360]   sigma_v, scale 0.1 m/s
+  uint8 r[24][361][720]    rain fraction/hour, scale 1/500 (0.5° grid)
 
 Usage:  python3 make_sim_assets.py ERA5_2d15012025.nc [more 2d files...]
 Companion files ERA5_uv1deg<TAG>.nc / ERA5_q1deg<TAG>.nc are picked up
@@ -37,6 +38,12 @@ def to_1deg(a):
     a = a[:, :720, :]  # 720 lat rows -> 180 one-degree blocks
     out = a.reshape(24, 180, 4, 360, 4).mean(axis=(2, 4))
     return np.concatenate([out, out[:, -1:, :]], axis=1)  # repeat south-pole row
+
+
+def to_halfdeg(a):
+    a = a[:, :720, :]
+    out = a.reshape(24, 360, 2, 720, 2).mean(axis=(2, 4))
+    return np.concatenate([out, out[:, -1:, :]], axis=1)  # (24,361,720)
 
 
 def shear_sigma(uv_path, q_path):
@@ -66,19 +73,19 @@ def build(path):
     tcw = np.maximum(np.asarray(ds.variables["tcw"][:], dtype=np.float64), 0.5)
     u = np.clip(to_1deg(np.asarray(ds.variables["viwve"][:], dtype=np.float64) / tcw), -63, 63)
     v = np.clip(to_1deg(np.asarray(ds.variables["viwvn"][:], dtype=np.float64) / tcw), -63, 63)
-    r = to_1deg(np.clip(np.asarray(ds.variables["tp"][:], dtype=np.float64) * 1000.0 / tcw, 0, 0.5))
-    blob = (np.round(u * 2).astype(np.int8).tobytes()
-            + np.round(v * 2).astype(np.int8).tobytes()
-            + np.round(r * 500).astype(np.uint8).tobytes())
+    r = to_halfdeg(np.clip(np.asarray(ds.variables["tp"][:], dtype=np.float64) * 1000.0 / tcw, 0, 0.5))
 
     uv_path = path.parent / f"ERA5_uv1deg{tag}.nc"
     q_path = path.parent / f"ERA5_q1deg{tag}.nc"
-    note = "no 3-D files — dispersion fields omitted"
-    if uv_path.exists() and q_path.exists():
-        su, sv = shear_sigma(uv_path, q_path)
-        blob += (np.round(np.clip(su, 0, 25.5) * 10).astype(np.uint8).tobytes()
-                 + np.round(np.clip(sv, 0, 25.5) * 10).astype(np.uint8).tobytes())
-        note = f"sigma_u mean {su.mean():.1f} m/s, p95 {np.percentile(su, 95):.1f}"
+    if not (uv_path.exists() and q_path.exists()):
+        sys.exit(f"missing 3-D companion files for {tag} (needed for dispersion fields)")
+    su, sv = shear_sigma(uv_path, q_path)
+    note = f"sigma_u mean {su.mean():.1f} m/s, p95 {np.percentile(su, 95):.1f}"
+    blob = (np.round(u * 2).astype(np.int8).tobytes()
+            + np.round(v * 2).astype(np.int8).tobytes()
+            + np.round(np.clip(su, 0, 25.5) * 10).astype(np.uint8).tobytes()
+            + np.round(np.clip(sv, 0, 25.5) * 10).astype(np.uint8).tobytes()
+            + np.round(r * 500).astype(np.uint8).tobytes())
     out = OUT_DIR / f"sim_forcing_{month}.bin.gz"
     out.write_bytes(gzip.compress(blob, 9))
     print(f"{out.name}: {out.stat().st_size/1e6:.2f} MB "

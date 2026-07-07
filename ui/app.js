@@ -42,22 +42,32 @@ function rampColor(t) { // t in [0,1]; dark theme uses the ramp reversed so high
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-/* ---------- land base layer ---------- */
-let landMask = null; // Uint8Array H*W, 1 = land (model grid indexing)
-const landReady = new Promise((resolve) => {
-  const img = new Image();
-  img.onload = () => {
-    const c = new OffscreenCanvas(W, H).getContext("2d");
-    c.drawImage(img, 0, 0);
-    const d = c.getImageData(0, 0, W, H).data;
+/* ---------- land base layer (with ERA5 orography hillshade) ---------- */
+let landMask = null;   // Uint8Array H*W, 1 = land (model grid indexing)
+let terrainM = null;   // Float32 H*W brightness multiplier from terrain.png (128 = 1.0)
+function loadGray(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = new OffscreenCanvas(W, H).getContext("2d");
+      c.drawImage(img, 0, 0);
+      resolve(c.getImageData(0, 0, W, H).data);
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+const landReady = Promise.all([loadGray("assets/land.png"), loadGray("assets/terrain.png")])
+  .then(([landPx, terrPx]) => {
     landMask = new Uint8Array(H * W);
-    for (let k = 0; k < H * W; k++) landMask[k] = d[k * 4] > 127 ? 1 : 0;
-    resolve();
-  };
-  img.src = "assets/land.png";
-});
+    for (let k = 0; k < H * W; k++) landMask[k] = landPx[k * 4] > 127 ? 1 : 0;
+    if (terrPx) {
+      terrainM = new Float32Array(H * W);
+      for (let k = 0; k < H * W; k++) terrainM[k] = terrPx[k * 4] / 128;
+    }
+  });
 
-function buildBaseLayer() { // theme-colored ocean+land, display-shifted
+function buildBaseLayer() { // theme-colored ocean + hillshaded land, display-shifted
   const canvas = new OffscreenCanvas(W, H);
   const ctx = canvas.getContext("2d");
   const ocean = hex2rgb(css("--ocean")), land = hex2rgb(css("--land"));
@@ -65,8 +75,14 @@ function buildBaseLayer() { // theme-colored ocean+land, display-shifted
   for (let i = 0; i < H; i++)
     for (let dx = 0; dx < W; dx++) {
       const j = (dx + SHIFT) % W;
-      const p = (i * W + dx) * 4, c = landMask[i * W + j] ? land : ocean;
-      img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+      const p = (i * W + dx) * 4;
+      const isLand = landMask[i * W + j];
+      const c = isLand ? land : ocean;
+      const m = isLand && terrainM ? terrainM[i * W + j] : 1;
+      img.data[p] = Math.min(255, c[0] * m);
+      img.data[p + 1] = Math.min(255, c[1] * m);
+      img.data[p + 2] = Math.min(255, c[2] * m);
+      img.data[p + 3] = 255;
     }
   ctx.putImageData(img, 0, 0);
   return canvas;
@@ -427,16 +443,18 @@ docker run --rm \\
  * rainout rate (tp/tcw), using 1°-hourly ERA5 fields for 2012-07-01,
  * looped daily. Units: user emits acre-feet/min; budgets in acre-feet. */
 const simMap = new MapView($("simCanvas"), $("simTip"));
-const SG_W = 360, SG_H = 181, SG_T = 24;
+const SG_W = 360, SG_H = 181, SG_T = 24;      // 1° grid: winds + dispersion
+const RG_W = 720, RG_H = 361;                 // 0.5° grid: rainout + deposition
 const SIM_DT = 300;                 // physics step, sim-seconds
 let simU = null, simV = null, simR = null, simSU = null, simSV = null;
+let simRW = RG_W, simRH = RG_H;               // actual rainout grid (legacy assets are 1°)
 let simRunning = false, simClockS = 0, simSpeed = 14400, lastFrame = 0, stepCarry = 0;
 const emitters = [];                // {gy, gx (1° coords), rate ac-ft/min}
 let parcels = [];                   // {gy, gx, vol}
 const PARCEL_CAP = 30000;
 let emittedTotal = 0, rainedTotal = 0;
-const depGrid = new Float32Array(SG_H * SG_W);       // rained-out ac-ft per 1° cell
-const depCanvas = new OffscreenCanvas(SG_W, SG_H);
+const depGrid = new Float32Array(RG_H * RG_W);       // rained-out ac-ft per 0.5° cell
+const depCanvas = new OffscreenCanvas(RG_W, RG_H);
 
 /* Monthly wind data: 15th of each month of 2025 (sim_forcing_MM.bin.gz),
  * lazily fetched and cached. */
@@ -457,14 +475,27 @@ async function loadSimMonth(m) {
     })();
   }
   const buf = await simCache[m];
-  const n = SG_T * SG_H * SG_W;
+  const n = SG_T * SG_H * SG_W, nr = SG_T * RG_H * RG_W;
   simU = new Int8Array(buf, 0, n);
   simV = new Int8Array(buf, n, n);
-  simR = new Uint8Array(buf, 2 * n, n);
-  // 5-field layout carries ERA5-derived shear dispersion; 3-field is legacy
-  const hasShear = buf.byteLength >= 5 * n;
-  simSU = hasShear ? new Uint8Array(buf, 3 * n, n) : null;
-  simSV = hasShear ? new Uint8Array(buf, 4 * n, n) : null;
+  if (buf.byteLength === 4 * n + nr) {
+    // v3: u, v, su, sv @1° + rainout @0.5° (orography-resolving)
+    simSU = new Uint8Array(buf, 2 * n, n);
+    simSV = new Uint8Array(buf, 3 * n, n);
+    simR = new Uint8Array(buf, 4 * n, nr);
+    simRW = RG_W; simRH = RG_H;
+  } else if (buf.byteLength === 5 * n) {
+    // v2 legacy: u, v, r, su, sv all @1°
+    simR = new Uint8Array(buf, 2 * n, n);
+    simSU = new Uint8Array(buf, 3 * n, n);
+    simSV = new Uint8Array(buf, 4 * n, n);
+    simRW = SG_W; simRH = SG_H;
+  } else {
+    // v1 legacy: u, v, r @1°, no shear fields
+    simR = new Uint8Array(buf, 2 * n, n);
+    simSU = simSV = null;
+    simRW = SG_W; simRH = SG_H;
+  }
   simMonthNum = m;
   $("simDataLabel").textContent = `15 ${MONTH_NAMES[m - 1]} 2025`;
 }
@@ -474,12 +505,13 @@ $("simMonth").addEventListener("change", () => {
     .catch((e) => { $("simDataLabel").textContent = e.message; });
 });
 
-function sampleField(f, gy, gx, tHour) {
-  // bilinear in space, linear in (looped) time; f is int8/uint8 raw
+function sampleField(f, gy, gx, tHour, GH = SG_H, GW = SG_W) {
+  // bilinear in space, linear in (looped) time; f is int8/uint8 raw;
+  // gy/gx are in the target grid's own coordinates
   const t0 = Math.floor(tHour) % SG_T, t1 = (t0 + 1) % SG_T, tf = tHour - Math.floor(tHour);
-  const y0 = Math.max(0, Math.min(SG_H - 2, Math.floor(gy))), yf = gy - y0;
-  const x0 = Math.floor(gx) % SG_W, x1 = (x0 + 1) % SG_W, xf = gx - Math.floor(gx);
-  const at = (t, y, x) => f[t * SG_H * SG_W + y * SG_W + x];
+  const y0 = Math.max(0, Math.min(GH - 2, Math.floor(gy))), yf = gy - y0;
+  const x0 = Math.floor(gx) % GW, x1 = (x0 + 1) % GW, xf = gx - Math.floor(gx);
+  const at = (t, y, x) => f[t * GH * GW + y * GW + x];
   const bil = (t) =>
     (at(t, y0, x0) * (1 - xf) + at(t, y0, x1) * xf) * (1 - yf) +
     (at(t, y0 + 1, x0) * (1 - xf) + at(t, y0 + 1, x1) * xf) * yf;
@@ -534,12 +566,13 @@ function simStep() {
     const coslat = Math.max(0.05, Math.cos(lat * Math.PI / 180));
     p.gx = (p.gx + (u * SIM_DT) / (111320 * coslat) + SG_W) % SG_W;
     p.gy = Math.min(SG_H - 1.01, Math.max(0.01, p.gy - (v * SIM_DT) / 111320));
-    const rf = sampleField(simR, p.gy, p.gx, tHour) / 500 * (SIM_DT / 3600);
+    const ry = p.gy * (simRH - 1) / (SG_H - 1), rx = p.gx * simRW / SG_W;
+    const rf = sampleField(simR, ry, rx, tHour, simRH, simRW) / 500 * (SIM_DT / 3600);
     const dep = p.vol * Math.min(0.9, rf);
     if (dep > 0) {
       p.vol -= dep;
       rainedTotal += dep;
-      depGrid[Math.round(p.gy) * SG_W + (Math.round(p.gx) % SG_W)] += dep;
+      depGrid[Math.min(RG_H - 1, Math.round(p.gy * 2)) * RG_W + (Math.round(p.gx * 2) % RG_W)] += dep;
     }
     if (p.vol > 1e-4) alive.push(p);
   }
@@ -549,18 +582,18 @@ function simStep() {
 
 function renderDeposition() {
   const ctx = depCanvas.getContext("2d");
-  const img = ctx.createImageData(SG_W, SG_H);
+  const img = ctx.createImageData(RG_W, RG_H);
   let max = 0;
   for (let k = 0; k < depGrid.length; k++) if (depGrid[k] > max) max = depGrid[k];
   if (max > 0) {
     const lo = Math.log(max * 1e-4), span = Math.log(max) - lo || 1;
-    for (let y = 0; y < SG_H; y++)
-      for (let x = 0; x < SG_W; x++) {
-        const v = depGrid[y * SG_W + x];
+    for (let y = 0; y < RG_H; y++)
+      for (let x = 0; x < RG_W; x++) {
+        const v = depGrid[y * RG_W + x];
         if (!(v > 0)) continue;
         const t = Math.max(0, (Math.log(v) - lo) / span);
         const c = rampColor(t);
-        const p = (y * SG_W + (x + 180) % SG_W) * 4;
+        const p = (y * RG_W + (x + RG_W / 2) % RG_W) * 4;
         img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2];
         img.data[p + 3] = 60 + 180 * t;
       }
@@ -568,7 +601,7 @@ function renderDeposition() {
   ctx.putImageData(img, 0, 0);
   simMap.octx.clearRect(0, 0, W, H);
   simMap.octx.imageSmoothingEnabled = true;
-  simMap.octx.drawImage(depCanvas, 0, -2, W, H + 4); // 181 rows -> 721, tiny stretch
+  simMap.octx.drawImage(depCanvas, 0, -1, W, H + 1); // 361 rows -> 721
 }
 
 simMap.decor = (ctx) => {
@@ -597,7 +630,7 @@ simMap.onPaint = (g, phase) => {
   simMap.render();
 };
 simMap.onHover = (g) => {
-  const d = depGrid[Math.min(SG_H - 1, Math.round(g.i / 4)) * SG_W + (Math.round(g.j / 4) % SG_W)];
+  const d = depGrid[Math.min(RG_H - 1, Math.round(g.i / 2)) * RG_W + (Math.round(g.j / 2) % RG_W)];
   return `${fmtLat(g.i)}, ${fmtLon(g.j)}${d > 0 ? `<br>rained out: <b>${fmtNum(d)}</b> ac-ft` : ""}`;
 };
 
