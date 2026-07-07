@@ -1,0 +1,19 @@
+# Build artifacts
+run_recycling
+*.o
+
+# Downloaded ERA5 forcing data (large; forcing/landmask.nc stays tracked)
+forcing/ERA5_*.nc
+
+# Model output
+output/
+
+# Credentials — never commit. CDS token lives in ~/.cdsapirc (outside repo);
+# containers get it via CDSAPI_URL/CDSAPI_KEY env vars.
+.cdsapirc
+.env
+.env.*
+*.pem
+
+# macOS
+.DS_Store
