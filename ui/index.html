@@ -126,6 +126,10 @@
           <button class="ghost" id="simResetBtn" style="width:auto">Reset</button>
         </div>
         <div class="row">
+          <label>Winds</label>
+          <select id="simMonth"></select>
+        </div>
+        <div class="row">
           <label>Speed</label>
           <div class="seg">
             <button data-speed="3600">1 h/s</button>
@@ -152,9 +156,9 @@
       <div class="card">
         <p class="note" style="margin:0">Runs UTrack's 2-D scheme live in your browser: parcels ride the
         moisture-flux wind (viwve/tcw) and rain out at the column rate (tp/tcw), on real ERA5 winds from
-        <b>1 Jul 2012</b> (looped daily). Because moisture is a passive tracer, your emission rate scales
-        linearly — the pattern is what matters. For full 3-D Lagrangian physics, design a run and execute
-        it on AWS.</p>
+        <b id="simDataLabel">…</b> (looped daily). Because moisture is a passive tracer, your emission rate
+        scales linearly — the pattern is what matters. For full 3-D Lagrangian physics, design a run and
+        execute it on AWS.</p>
       </div>
     </aside>
   </div>

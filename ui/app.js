@@ -438,14 +438,37 @@ let emittedTotal = 0, rainedTotal = 0;
 const depGrid = new Float32Array(SG_H * SG_W);       // rained-out ac-ft per 1° cell
 const depCanvas = new OffscreenCanvas(SG_W, SG_H);
 
-const simReady = (async () => {
-  const resp = await fetch("assets/sim_forcing.bin.gz");
-  const buf = await new Response(resp.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+/* Monthly wind data: 15th of each month of 2025 (sim_forcing_MM.bin.gz),
+ * lazily fetched and cached. */
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const simCache = {};
+let simMonthNum = new Date().getMonth() + 1;   // default: current month
+MONTH_NAMES.forEach((nm, i) =>
+  $("simMonth").append(new Option(`${nm} 2025`, i + 1, false, i + 1 === simMonthNum)));
+
+async function loadSimMonth(m) {
+  if (!simCache[m]) {
+    simCache[m] = (async () => {
+      const mm = String(m).padStart(2, "0");
+      const resp = await fetch(`assets/sim_forcing_${mm}.bin.gz`);
+      if (!resp.ok) throw new Error(`no wind data for month ${mm}`);
+      const buf = await new Response(resp.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+      return buf;
+    })();
+  }
+  const buf = await simCache[m];
   const n = SG_T * SG_H * SG_W;
   simU = new Int8Array(buf, 0, n);
   simV = new Int8Array(buf, n, n);
   simR = new Uint8Array(buf, 2 * n, n);
-})();
+  simMonthNum = m;
+  $("simDataLabel").textContent = `15 ${MONTH_NAMES[m - 1]} 2025`;
+}
+let simReady = loadSimMonth(simMonthNum);
+$("simMonth").addEventListener("change", () => {
+  simReady = loadSimMonth(+$("simMonth").value)
+    .catch((e) => { $("simDataLabel").textContent = e.message; });
+});
 
 function sampleField(f, gy, gx, tHour) {
   // bilinear in space, linear in (looped) time; f is int8/uint8 raw
@@ -460,6 +483,7 @@ function sampleField(f, gy, gx, tHour) {
 }
 
 function simStep() {
+  if (!simU) return;
   const tHour = (simClockS / 3600) % SG_T;
   // emit
   for (const e of emitters) {
