@@ -449,7 +449,8 @@ const SIM_DT = 300;                 // physics step, sim-seconds
 let simU = null, simV = null, simR = null, simSU = null, simSV = null;
 let simRW = RG_W, simRH = RG_H;               // actual rainout grid (legacy assets are 1°)
 let simRunning = false, simClockS = 0, simSpeed = 14400, lastFrame = 0, stepCarry = 0;
-const emitters = [];                // {gy, gx (1° coords), rate ac-ft/min}
+const emitters = [];                // {gy, gx (1° coords), rate in MGD (million gal/day)}
+                                    // all volumes tracked in Mgal (1 Mgal = 3785.41 m³)
 let parcels = [];                   // {gy, gx, vol}
 const PARCEL_CAP = 30000;
 let emittedTotal = 0, rainedTotal = 0;
@@ -544,7 +545,7 @@ function simStep() {
     (simSV ? sampleField(simSV, gy, gx, tHour) * 0.1 : DISP_FALLBACK_SIGMA);
   // emit
   for (const e of emitters) {
-    const vol = e.rate * (SIM_DT / 60);
+    const vol = e.rate * (SIM_DT / 86400);  // MGD -> Mgal per step
     if (parcels.length < PARCEL_CAP) {
       parcels.push({
         gy: e.gy + (Math.random() - 0.5) * 0.6, gx: e.gx + (Math.random() - 0.5) * 0.6,
@@ -574,7 +575,7 @@ function simStep() {
       rainedTotal += dep;
       depGrid[Math.min(RG_H - 1, Math.round(p.gy * 2)) * RG_W + (Math.round(p.gx * 2) % RG_W)] += dep;
     }
-    if (p.vol > 1e-4) alive.push(p);
+    if (p.vol > 1e-6) alive.push(p);
   }
   parcels = alive;
   simClockS += SIM_DT;
@@ -609,7 +610,7 @@ simMap.decor = (ctx) => {
   ctx.fillStyle = accent();
   for (const p of parcels) {
     const dx = (p.gx * 4 + SHIFT) % W, dy = p.gy * 4;
-    ctx.globalAlpha = 0.35 + 0.6 * Math.min(1, p.vol / (emitters[0]?.rate * 5 / 60 || 1));
+    ctx.globalAlpha = 0.35 + 0.6 * Math.min(1, p.vol / ((emitters[0]?.rate || 1) * SIM_DT / 86400));
     ctx.fillRect(dx - px / 2, dy - px / 2, px, px);
   }
   ctx.globalAlpha = 1;
@@ -625,13 +626,13 @@ simMap.decor = (ctx) => {
 
 simMap.onPaint = (g, phase) => {
   if (phase !== "start") return;
-  emitters.push({ gy: g.i / 4, gx: g.j / 4, rate: Math.max(0.1, +$("emitRate").value || 5) });
+  emitters.push({ gy: g.i / 4, gx: g.j / 4, rate: Math.max(0.1, +$("emitRate").value || 100) });
   $("emitterCount").textContent = emitters.length + " emitter" + (emitters.length === 1 ? "" : "s");
   simMap.render();
 };
 simMap.onHover = (g) => {
   const d = depGrid[Math.min(RG_H - 1, Math.round(g.i / 2)) * RG_W + (Math.round(g.j / 2) % RG_W)];
-  return `${fmtLat(g.i)}, ${fmtLon(g.j)}${d > 0 ? `<br>rained out: <b>${fmtNum(d)}</b> ac-ft` : ""}`;
+  return `${fmtLat(g.i)}, ${fmtLon(g.j)}${d > 0 ? `<br>rained out: <b>${fmtNum(d)}</b> Mgal` : ""}`;
 };
 
 function simBudgetUI() {
@@ -690,10 +691,13 @@ document.querySelectorAll("[data-speed]").forEach((b) =>
     document.querySelectorAll("[data-speed]").forEach((x) => x.classList.toggle("active", x === b));
   }));
 function rateEquivUI() {
-  const r = Math.max(0.1, +$("emitRate").value || 5);   // ac-ft/min
-  const m3s = r * 1233.48 / 60;
-  const mmday = r * 1233.48 * 1440 / (27830 * 27830 * 0.7) * 1000; // over one ~0.25° mid-lat cell
-  $("rateEquiv").textContent = `≈ ${m3s.toFixed(0)} m³/s · ≈ ${mmday.toFixed(1)} mm/day over one grid cell`;
+  const r = Math.max(0.1, +$("emitRate").value || 100);   // MGD
+  const m3day = r * 3785.41;
+  const m3s = m3day / 86400;
+  const acftday = m3day / 1233.48;
+  const mmday = m3day / (27830 * 27830 * 0.7) * 1000;     // over one ~0.25° mid-lat cell
+  $("rateEquiv").textContent =
+    `≈ ${m3s.toFixed(1)} m³/s · ≈ ${acftday.toFixed(0)} ac-ft/day · ≈ ${mmday.toFixed(2)} mm/day over one grid cell`;
 }
 $("emitRate").addEventListener("input", rateEquivUI);
 rateEquivUI();
@@ -907,7 +911,7 @@ landReady.then(() => {
     document.querySelector('[data-tab="sim"]').click();
   if (location.hash.includes("simtest")) {  // synchronous smoke test for CI/screenshots
     simReady.then(() => {
-      emitters.push({ gy: 51, gx: 261.5, rate: 5 });  // Kansas
+      emitters.push({ gy: 51, gx: 261.5, rate: 100 });  // Kansas, 100 MGD
       $("emitterCount").textContent = "1 emitter";
       for (let s = 0; s < 3 * 288; s++) simStep();     // 3 sim-days
       renderDeposition(); simMap.render(); simBudgetUI();

@@ -110,8 +110,8 @@
         <h2>Emitter</h2>
         <div class="row">
           <label>Rate</label>
-          <input type="number" id="emitRate" min="0.1" step="0.5" value="5">
-          <span class="note">acre-ft / min</span>
+          <input type="number" id="emitRate" min="0.1" step="10" value="100">
+          <span class="note">million gal / day</span>
         </div>
         <p class="note" id="rateEquiv" style="margin:0 0 8px"></p>
         <div class="row">
@@ -155,9 +155,9 @@
       <div class="card">
         <h2>Water budget</h2>
         <div class="stats">
-          <div class="stat"><div class="v" id="wbEmitted">0</div><div class="k">emitted (ac-ft)</div></div>
-          <div class="stat"><div class="v" id="wbAirborne">0</div><div class="k">airborne (ac-ft)</div></div>
-          <div class="stat"><div class="v" id="wbRained">0</div><div class="k">rained out (ac-ft)</div></div>
+          <div class="stat"><div class="v" id="wbEmitted">0</div><div class="k">emitted (Mgal)</div></div>
+          <div class="stat"><div class="v" id="wbAirborne">0</div><div class="k">airborne (Mgal)</div></div>
+          <div class="stat"><div class="v" id="wbRained">0</div><div class="k">rained out (Mgal)</div></div>
           <div class="stat"><div class="v" id="wbParcels">0</div><div class="k">parcels</div></div>
         </div>
       </div>
@@ -332,8 +332,9 @@
             (mean ≈ 3.2 m/s, p95 ≈ 8 m/s). This reproduces statistically the vertical-shear spreading
             of the 3-D scheme. The UI's 0.5×/1×/1.5× selector is a sensitivity test.</li>
         <li><b>Time step:</b> Δt = 300 s; playback 1/4/12 sim-hours per wall-second; parcel cap 30,000.</li>
-        <li><b>Budget:</b> emitted = airborne + rained out (acre-feet; 1 ac-ft = 1233.48 m³) —
-            closure is exact by construction and displayed live.</li>
+        <li><b>Budget:</b> emitted = airborne + rained out; rates in million U.S. gallons per day (MGD),
+            volumes in Mgal (1 Mgal = 3,785.41 m³ ≈ 3.07 ac-ft) — closure is exact by construction and
+            displayed live.</li>
       </ul>
     </details>
 

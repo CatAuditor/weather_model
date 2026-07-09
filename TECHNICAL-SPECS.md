@@ -61,8 +61,9 @@ The system has three parts:
   ≈ 3.2 m/s, p95 ≈ 8 m/s). Stands in for the vertical-shear spreading the
   2-D column collapse removes. UI exposes 0.5×/1×/1.5× as sensitivity test.
 - Time step Δt = 300 s; speeds 1/4/12 sim-hours per wall-second.
-- Budget: emitted = airborne + rained out, in acre-feet
-  (1 ac-ft = 1233.48 m³); closure is exact by construction and displayed live.
+- Budget: emitted = airborne + rained out; rates in million U.S. gallons per
+  day (MGD), volumes in Mgal (1 Mgal = 3,785.41 m³ ≈ 3.07 ac-ft); closure is
+  exact by construction and displayed live.
 
 **Data** (`ui/assets/sim_forcing_MM.bin.gz`, layout v3, ~4.8 MB/month):
 
